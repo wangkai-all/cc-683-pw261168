@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CoFocus · 协作关系分析</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app viz-root">
+
+  <header class="masthead">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="30" height="30">
+          <circle cx="10" cy="10" r="3.2"></circle>
+          <circle cx="23" cy="8" r="2.6"></circle>
+          <circle cx="22" cy="22" r="3.2"></circle>
+          <circle cx="9" cy="23" r="2.6"></circle>
+          <path d="M12.8 11.4 20.6 9.4M12.4 12.8l7.6 7.2M11.6 21.6l-1.2-8.4M11.4 23.2l8-1.4M20.4 10.6 21.6 18.8"></path>
+        </svg>
+      </div>
+      <div>
+        <h1>CoFocus <span class="cn">协作关系分析</span></h1>
+        <p class="tagline">把共同完成事项的人员记录转成加权关系图，再找协作紧密的群组。</p>
+      </div>
+    </div>
+    <div class="masthead-actions">
+      <button class="btn btn-quiet" id="btn-data" aria-expanded="false" aria-controls="data-drawer">数据与口径</button>
+      <button class="btn btn-quiet" id="theme-toggle" aria-label="切换深浅色">
+        <span class="theme-icon" aria-hidden="true"></span>
+        <span id="theme-label">深色</span>
+      </button>
+    </div>
+  </header>
+
+  <section class="data-drawer" id="data-drawer" hidden>
+    <div class="drawer-grid">
+      <div>
+        <h2>转换口径</h2>
+        <div class="control-row">
+          <label for="rule-select">大事项归一化</label>
+          <select id="rule-select">
+            <option value="per-matter">整件事项总权重固定（默认，按 C(m,2) 均摊）</option>
+            <option value="per-person">按参与人数发放（每人 1，按 m-1 均摊）</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="transform-select">重复共事累积</label>
+          <select id="transform-select">
+            <option value="sqrt">平方根（默认，次线性）</option>
+            <option value="linear">线性累加</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="dup-select">重复导入</label>
+          <select id="dup-select">
+            <option value="first">保留首次（默认）</option>
+            <option value="last">保留末次</option>
+          </select>
+        </div>
+        <p class="note" id="normalize-note"></p>
+      </div>
+      <div>
+        <h2>导入数据</h2>
+        <p class="note">每行一个事项：<code>事项编号</code>、<code>人员（用逗号或顿号分隔）</code>，可选 <code>名称</code>、<code>年份</code>、<code>权重</code>。编号相同视为同一事项，重复行不会加重关系。</p>
+        <label class="sr-only" for="paste-input">粘贴事项数据</label>
+        <textarea id="paste-input" spellcheck="false" placeholder="A-01, 陈亦航, 林书瑶, 周牧&#10;A-02, 陈亦航, 林书瑶, 郑澜"></textarea>
+        <div class="row-actions">
+          <button class="btn btn-primary" id="btn-import">导入粘贴的数据</button>
+          <button class="btn btn-quiet" id="btn-reset">恢复本地样本</button>
+          <span class="row-note" id="import-result" role="status"></span>
+        </div>
+      </div>
+    </div>
+    <div class="stats-strip" id="stats-strip"></div>
+  </section>
+
+  <main>
+    <!-- 1. Overview -->
+    <section class="panel" id="panel-overview">
+      <div class="panel-head">
+        <div>
+          <h2><span class="step">1</span> 连通块与孤立人员</h2>
+          <p class="panel-sub">先看整体结构。没有共同事项记录的人不会被塞进任何群组，也不参与任何除法。</p>
+        </div>
+        <div class="segmented" role="group" aria-label="视图">
+          <button class="seg is-active" data-overview="map">关系图</button>
+          <button class="seg" data-overview="components">连通块列表</button>
+        </div>
+      </div>
+      <div class="overview-grid">
+        <div class="graph-wrap">
+          <div class="graph-scroll">
+            <svg id="graph-svg" class="graph" role="img" aria-label="人员协作关系图"></svg>
+          </div>
+          <div id="components-view" class="components-view" hidden></div>
+          <p class="scroll-hint">左右滑动查看完整关系图</p>
+          <div class="graph-legend" id="graph-legend"></div>
+          <div class="tooltip" id="graph-tooltip" role="tooltip" hidden></div>
+        </div>
+        <aside class="side-stack">
+          <div class="tile" id="tile-components"></div>
+          <div class="tile" id="tile-isolated"></div>
+          <div class="tile tile-muted" id="tile-trace">
+            <h3>从关系回到事项</h3>
+            <p class="empty-hint">点选图中任意一条边，查看是哪些事项贡献了这条关系。</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- 2. Grouping -->
+    <section class="panel" id="panel-groups">
+      <div class="panel-head">
+        <div>
+          <h2><span class="step">2</span> 连通块内谱分组</h2>
+          <p class="panel-sub">按分量分别分组，组数可调。相邻特征值之间是否有明显间隔，决定这个划分是否站得住。</p>
+        </div>
+        <div class="k-control">
+          <label for="k-range">最大连通块目标组数 <output id="k-output">5</output></label>
+          <input type="range" id="k-range" min="1" max="8" step="1" value="5" />
+        </div>
+      </div>
+      <div class="groups-grid">
+        <div>
+          <div class="component-tabs" id="component-tabs" role="tablist" aria-label="选择连通块"></div>
+          <div id="spectrum-host" class="spectrum-host"></div>
+          <div id="group-list" class="group-list"></div>
+        </div>
+        <aside class="side-stack">
+          <div class="tile" id="tile-evidence"></div>
+          <div class="tile" id="tile-sweep"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- 3. Comparison -->
+    <section class="panel" id="panel-compare">
+      <div class="panel-head">
+        <div>
+          <h2><span class="step">3</span> 排除大型事项后重新分组</h2>
+          <p class="panel-sub">选定要排除的事项，重新分组，再按成员重合匹配两边群组——编号本身不参与比较。</p>
+        </div>
+        <div class="compare-actions">
+          <label class="checkbox"><input type="checkbox" id="compare-enable" checked /> 启用对照</label>
+          <button class="btn btn-quiet" id="btn-compare-expand" aria-expanded="false">选择事项</button>
+        </div>
+      </div>
+      <div class="matter-picker" id="matter-picker" hidden>
+        <p class="note">勾选要排除的事项，右侧立即重算。默认已选规模最大的事项。</p>
+        <div class="matter-chips" id="matter-chips"></div>
+      </div>
+      <div class="compare-grid">
+        <div class="compare-col">
+          <h3>当前分组</h3>
+          <div id="compare-before" class="compare-groups"></div>
+        </div>
+        <div class="compare-col">
+          <h3>排除后 <span class="col-sub" id="compare-excluded-label"></span></h3>
+          <div id="compare-after" class="compare-groups"></div>
+        </div>
+        <aside class="side-stack">
+          <div class="tile" id="tile-compare-summary"></div>
+          <div class="tile" id="tile-still-together"></div>
+        </aside>
+      </div>
+      <div class="person-outcomes" id="person-outcomes"></div>
+    </section>
+
+    <!-- 4. Stability -->
+    <section class="panel" id="panel-stability">
+      <div class="panel-head">
+        <div>
+          <h2><span class="step">4</span> 权重扰动下的稳定性</h2>
+          <p class="panel-sub">对每条边做轻微随机扰动后反复分组。归属反复变化的人，标成不稳定，而不是硬给一个部门。</p>
+        </div>
+        <div class="stability-controls">
+          <div class="k-control">
+            <label for="sigma-range">扰动幅度 ±<output id="sigma-output">10%</output></label>
+            <input type="range" id="sigma-range" min="2" max="25" step="1" value="10" />
+          </div>
+          <button class="btn btn-primary" id="btn-run-perturb">重新抽样</button>
+        </div>
+      </div>
+      <div class="stability-grid">
+        <div>
+          <div id="stability-list" class="stability-list"></div>
+        </div>
+        <aside class="side-stack">
+          <div class="tile" id="tile-stability-summary"></div>
+          <div class="tile" id="tile-stability-note"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>所有计算在浏览器本地完成，数据不外发。样本为合成数据。</p>
+  </footer>
+</div>
+
+<script src="core.js"></script>
+<script src="data/sample.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
